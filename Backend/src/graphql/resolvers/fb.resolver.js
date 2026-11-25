@@ -176,7 +176,12 @@ const resolvers = {
         }
         changes.price = input.price;
       }
-      if (input.isActive !== undefined) changes.isActive = input.isActive;
+      if (input.isActive !== undefined) {
+        if (typeof input.isActive !== "boolean") {
+          throw badRequest("isActive must be a boolean.");
+        }
+        changes.isActive = input.isActive;
+      }
       if (Object.keys(changes).length === 0) throw badRequest("Provide at least one item field to update.");
       await item.update(changes);
       return item;

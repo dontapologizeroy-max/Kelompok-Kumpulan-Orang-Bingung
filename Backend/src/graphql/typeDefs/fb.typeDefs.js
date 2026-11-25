@@ -6,12 +6,6 @@ module.exports = gql`
     LUNAS
   }
 
-  enum PaymentMethod {
-    TUNAI
-    QRIS
-    TRANSFER
-  }
-
   enum FbOrderPaymentMode {
     LUNAS
     BELUM_BAYAR

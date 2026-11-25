@@ -1,18 +1,41 @@
 const { Op, fn, col } = require("sequelize");
-const { OperatorShift, Payment, Computer, BillingSession, sequelize } = require("../../models");
+const { OperatorShift, Payment, Computer, BillingSession, User, sequelize } = require("../../models");
 const { requireRole } = require("../../middlewares/roleGuard");
 const { badRequest, conflict, notFound } = require("../utils");
+const {
+  exportRevenuePdf,
+  exportRevenueExcel,
+  exportOccupancyPdf,
+  exportOccupancyExcel
+} = require("../../utils/reportExporter");
 
 const STAFF_ROLES = ["ADMIN", "OPERATOR", "TEKNISI", "OWNER"];
 
 function parseDateRange(startDate, endDate) {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    throw badRequest("Report dates must be valid date strings.");
-  }
-  const endExclusive = new Date(end);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+  const parseDate = (value, label) => {
+    if (typeof value !== "string" || !value.trim()) {
+      throw badRequest(`${label} must be a valid date string.`);
+    }
+    const normalized = value.trim();
+    const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(normalized);
+    const date = new Date(
+      isDateOnly
+        ? `${normalized}T00:00:00.000Z`
+        : normalized
+    );
+    if (
+      Number.isNaN(date.getTime()) ||
+      (isDateOnly && date.toISOString().slice(0, 10) !== normalized)
+    ) {
+      throw badRequest(`${label} must be a valid date string.`);
+    }
+    return { date, isDateOnly };
+  };
+  const startValue = parseDate(startDate, "startDate");
+  const endValue = parseDate(endDate, "endDate");
+  const start = startValue.date;
+  const endExclusive = new Date(endValue.date);
+  if (endValue.isDateOnly) {
     endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
   } else {
     endExclusive.setTime(endExclusive.getTime() + 1);
@@ -23,6 +46,17 @@ function parseDateRange(startDate, endDate) {
 
 function numericAmount(value) {
   return Number(value || 0);
+}
+
+function reportFile(kind, format, content) {
+  const extension = format.toLowerCase() === "pdf" ? "pdf" : "xlsx";
+  return {
+    fileName: `${kind}-report.${extension}`,
+    mimeType: extension === "pdf"
+      ? "application/pdf"
+      : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    contentBase64: Buffer.from(content).toString("base64")
+  };
 }
 
 const resolvers = {
@@ -150,6 +184,11 @@ const resolvers = {
         throw badRequest("Starting cash must be a non-negative number.");
       }
       return sequelize.transaction(async (transaction) => {
+        const staff = await User.findByPk(user.id, {
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        if (!staff || !staff.isActive) throw notFound("Active staff user");
         const openShift = await OperatorShift.findOne({
           where: { userId: user.id, status: "BUKA" },
           transaction,
@@ -185,6 +224,26 @@ const resolvers = {
         }, { transaction });
         return shift;
       });
+    },
+    exportRevenueReport: async (_parent, { startDate, endDate, format }, { user }) => {
+      requireRole(user, "ADMIN", "OWNER");
+      const summary = await resolvers.Query.revenueReport(
+        _parent,
+        { startDate, endDate },
+        { user }
+      );
+      const exporter = format === "PDF" ? exportRevenuePdf : exportRevenueExcel;
+      return reportFile("revenue", format, await exporter(summary));
+    },
+    exportOccupancyReport: async (_parent, { startDate, endDate, format }, { user }) => {
+      requireRole(user, "ADMIN", "OWNER");
+      const summary = await resolvers.Query.occupancyReport(
+        _parent,
+        { startDate, endDate },
+        { user }
+      );
+      const exporter = format === "PDF" ? exportOccupancyPdf : exportOccupancyExcel;
+      return reportFile("occupancy", format, await exporter(summary));
     }
   }
 };

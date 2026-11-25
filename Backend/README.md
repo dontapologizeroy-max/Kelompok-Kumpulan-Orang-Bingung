@@ -1,6 +1,7 @@
 # Warnet Management GraphQL API
 
-Backend API for the warnet management project. The current implementation covers Developer 1 (server foundation, authentication, member, zone, and computer management). Billing, F&B, maintenance, shifts, and reporting modules are not included.
+GraphQL API for the warnet management system, built with Node.js, Express,
+Apollo Server, Sequelize, and MySQL.
 
 ## Requirements
 
@@ -15,15 +16,17 @@ Backend API for the warnet management project. The current implementation covers
    npm install
    ```
 
-2. Create the tables and seed the built-in roles and default zones:
+2. Create the database tables and seed the built-in roles and default zones:
 
    ```sh
    mysql -u root -p < database/schema.sql
    ```
 
-3. Copy `.env.example` to `.env`, then set the MySQL connection values and a long random `JWT_SECRET`.
+3. Copy `.env.example` to `.env`, then set the MySQL connection values and a
+   long random `JWT_SECRET`.
 
-4. Create the first administrator. Set the three `ADMIN_*` values in your shell first; the script refuses to run if an administrator already exists:
+4. Create the first administrator. Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and
+   `ADMIN_FULL_NAME` in the environment first:
 
    ```sh
    npm run create-admin
@@ -35,14 +38,23 @@ Backend API for the warnet management project. The current implementation covers
    npm run dev
    ```
 
-The GraphQL endpoint is `http://localhost:4000/graphql`. Database schema synchronization is intentionally not run automatically; use the reviewed SQL script instead.
+The GraphQL endpoint is `http://localhost:4000/graphql`. Database schema
+synchronization is intentionally not run automatically; use the reviewed SQL
+script instead.
 
-## Implemented GraphQL areas
+## Implemented areas
 
-- Staff and member login with JWT authentication and role checks
-- Staff user creation (ADMIN only)
-- Member registration, profile updates, member lookup, and member balances/loyalty fields
-- Zone and PC unit CRUD/status management
-- Sequelize models and relations for all 16 shared database tables
+- Staff and member login, JWT authentication, and role-based authorization
+- Member registration, profile and balance/loyalty lookup
+- Zone, PC, and billing-package management
+- Prepaid packages, vouchers, member top-ups, and PC billing sessions
+- F&B inventory and orders, including session-end combined payments
+- PC maintenance tickets and technician assignment
+- Cashier shifts, revenue and PC occupancy reports
+- PDF and Excel report exports through `exportRevenueReport` and
+  `exportOccupancyReport`
 
-Mutations that change billing balances or cashier payments belong to the billing/payment modules and are not implemented here.
+Run the backend tests with `npm test` from this directory.
+
+See [GRAPHQL_TEST_QUERIES.md](./GRAPHQL_TEST_QUERIES.md) for copy-ready
+GraphQL operations and JSON variables for every query and mutation.

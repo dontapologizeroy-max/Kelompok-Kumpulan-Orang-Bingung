@@ -1,6 +1,8 @@
 const jwt = require("jsonwebtoken");
 const { GraphQLError } = require("graphql");
 
+const STAFF_ROLES = new Set(["ADMIN", "OPERATOR", "TEKNISI", "OWNER"]);
+
 function createAuthContext({ req }) {
   const authorization = req.headers.authorization;
   if (!authorization) {
@@ -16,12 +18,20 @@ function createAuthContext({ req }) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    if (!payload.sub || !payload.role || !["staff", "member"].includes(payload.type)) {
+    const id = Number(payload.sub);
+    const validId =
+      typeof payload.sub === "string" &&
+      /^[1-9]\d*$/.test(payload.sub) &&
+      Number.isSafeInteger(id);
+    const validRole =
+      (payload.type === "staff" && STAFF_ROLES.has(payload.role)) ||
+      (payload.type === "member" && payload.role === "MEMBER");
+    if (!validId || !validRole) {
       throw new Error("Invalid token claims.");
     }
     return {
       user: {
-        id: Number(payload.sub),
+        id,
         role: payload.role,
         type: payload.type
       }

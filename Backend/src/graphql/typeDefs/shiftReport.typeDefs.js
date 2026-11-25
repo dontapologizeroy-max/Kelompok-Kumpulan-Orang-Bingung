@@ -1,6 +1,11 @@
 const { gql } = require("graphql-tag");
 
 module.exports = gql`
+  enum ReportFormat {
+    PDF
+    XLSX
+  }
+
   type OperatorShift {
     id: ID!
     userId: ID!
@@ -50,6 +55,12 @@ module.exports = gql`
     peakHours: [PeakHourOccupancy!]!
   }
 
+  type ReportFile {
+    fileName: String!
+    mimeType: String!
+    contentBase64: String!
+  }
+
   extend type Query {
     currentShift: OperatorShift
     shiftHistory: [OperatorShift!]!
@@ -60,5 +71,7 @@ module.exports = gql`
   extend type Mutation {
     openShift(startingCash: Float!): OperatorShift!
     closeShift(endingCash: Float!, notes: String): OperatorShift!
+    exportRevenueReport(startDate: String!, endDate: String!, format: ReportFormat!): ReportFile!
+    exportOccupancyReport(startDate: String!, endDate: String!, format: ReportFormat!): ReportFile!
   }
 `;

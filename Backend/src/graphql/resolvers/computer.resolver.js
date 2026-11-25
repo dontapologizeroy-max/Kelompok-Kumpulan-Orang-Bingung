@@ -1,10 +1,12 @@
+const { Op } = require("sequelize");
 const {
   Zone,
   Computer,
   BillingPackage,
   BillingSession,
   FbOrder,
-  PcMaintenance
+  PcMaintenance,
+  sequelize
 } = require("../../models");
 const { requireRole } = require("../../middlewares/roleGuard");
 const { badRequest, conflict, notFound, parseId } = require("../utils");
@@ -147,15 +149,7 @@ const resolvers = {
     updateComputer: async (_parent, { id, input }, { user }) => {
       requireRole(user, "ADMIN", "OPERATOR");
       const computerId = parseId(id);
-      const computer = await Computer.findByPk(computerId);
-      if (!computer) {
-        throw notFound("Computer");
-      }
       const zoneId = parseId(input.zoneId, "zoneId");
-      const zone = await Zone.findByPk(zoneId);
-      if (!zone || !zone.isActive) {
-        throw badRequest("The selected zone is unavailable.");
-      }
       const pcName = input.pcName.trim();
       if (!pcName) {
         throw badRequest("PC name cannot be empty.");
@@ -170,20 +164,80 @@ const resolvers = {
           changes[field] = input[field]?.trim() || null;
         }
       }
-      await computer.update(changes);
-      return Computer.findByPk(computerId, {
-        include: [{ model: Zone, as: "zone" }]
+      return sequelize.transaction(async (transaction) => {
+        const computer = await Computer.findByPk(computerId, {
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        if (!computer) throw notFound("Computer");
+
+        const zone = await Zone.findByPk(zoneId, { transaction });
+        if (!zone || !zone.isActive) {
+          throw badRequest("The selected zone is unavailable.");
+        }
+        if (zoneId !== computer.zoneId) {
+          const [activeSession, openMaintenanceCount] = await Promise.all([
+            BillingSession.findOne({
+              where: { computerId, status: "AKTIF" },
+              attributes: ["id"],
+              transaction
+            }),
+            PcMaintenance.count({
+              where: { computerId, status: { [Op.ne]: "SELESAI" } },
+              transaction
+            })
+          ]);
+          if (activeSession) {
+            throw conflict("A computer with an active billing session cannot change zones.");
+          }
+          if (openMaintenanceCount > 0) {
+            throw conflict("A computer with open maintenance tickets cannot change zones.");
+          }
+        }
+
+        await computer.update(changes, { transaction });
+        return Computer.findByPk(computerId, {
+          include: [{ model: Zone, as: "zone" }],
+          transaction
+        });
       });
     },
     updateComputerStatus: async (_parent, { id, status }, { user }) => {
       requireRole(user, "ADMIN", "OPERATOR", "TEKNISI");
-      const computer = await Computer.findByPk(parseId(id));
-      if (!computer) {
-        throw notFound("Computer");
-      }
-      await computer.update({ status });
-      return Computer.findByPk(computer.id, {
-        include: [{ model: Zone, as: "zone" }]
+      const computerId = parseId(id);
+      return sequelize.transaction(async (transaction) => {
+        const computer = await Computer.findByPk(computerId, {
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        if (!computer) throw notFound("Computer");
+
+        const [activeSession, openMaintenanceCount] = await Promise.all([
+          BillingSession.findOne({
+            where: { computerId, status: "AKTIF" },
+            attributes: ["id"],
+            transaction
+          }),
+          PcMaintenance.count({
+            where: { computerId, status: { [Op.ne]: "SELESAI" } },
+            transaction
+          })
+        ]);
+        if (activeSession && status !== "DIGUNAKAN") {
+          throw conflict("An active billing session keeps this computer in use.");
+        }
+        if (!activeSession && status === "DIGUNAKAN") {
+          throw conflict("A computer can only be marked in use by starting a billing session.");
+        }
+        if (openMaintenanceCount > 0 && status !== "MAINTENANCE") {
+          throw conflict("Resolve all open maintenance tickets before changing this computer's status.");
+        }
+
+        await computer.update({ status }, { transaction });
+        return Computer.findByPk(computer.id, {
+          include: [{ model: Zone, as: "zone" }],
+          transaction
+        });
       });
     },
     deleteComputer: async (_parent, { id }, { user }) => {

@@ -118,6 +118,7 @@ module.exports = gql`
   extend type Mutation {
     createBillingPackage(input: PackageInput!): BillingPackage!
     updateBillingPackage(id: ID!, input: PackageInput!): BillingPackage!
+    deleteBillingPackage(id: ID!): Boolean!
     generateVouchers(packageId: ID!, quantity: Int!): [Voucher!]!
     topUpMember(memberId: ID!, amount: Float!, minutes: Int, method: PaymentMethod!): Payment!
     startSession(input: StartSessionInput!): BillingSession!

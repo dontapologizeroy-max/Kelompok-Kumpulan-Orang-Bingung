@@ -35,10 +35,23 @@ async function startServer() {
     console.log(`GraphQL server ready at http://localhost:${port}/graphql`);
   });
 
+  let shuttingDown = false;
   const shutdown = async () => {
-    httpServer.close();
-    await server.stop();
-    await sequelize.close();
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+
+    try {
+      await new Promise((resolve, reject) => {
+        httpServer.close((error) => (error ? reject(error) : resolve()));
+      });
+      await server.stop();
+      await sequelize.close();
+    } catch (error) {
+      console.error("Failed to shut down server:", error);
+      process.exitCode = 1;
+    }
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

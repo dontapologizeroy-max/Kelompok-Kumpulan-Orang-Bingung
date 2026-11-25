@@ -3,6 +3,7 @@ const {
   BillingPackage,
   BillingSession,
   Computer,
+  FbOrder,
   Member,
   OperatorShift,
   Payment,
@@ -16,6 +17,7 @@ const { requireRole } = require("../../middlewares/roleGuard");
 const { badRequest, conflict, notFound, parseId } = require("../utils");
 const {
   calculateElapsedMinutes,
+  calculateUncoveredMinutes,
   calculateMemberDebit,
   calculateOpenBilling,
   calculatePrepaidCost,
@@ -298,6 +300,29 @@ const resolvers = {
           include: PACKAGE_INCLUDES,
           transaction
         });
+      });
+    },
+    deleteBillingPackage: async (_parent, { id }, { user }) => {
+      requireRole(user, "ADMIN");
+      const packageId = parseId(id);
+      return sequelize.transaction(async (transaction) => {
+        const billingPackage = await BillingPackage.findByPk(
+          packageId,
+          lockOptions(transaction)
+        );
+        if (!billingPackage) throw notFound("Billing package");
+
+        const [voucherCount, sessionCount, extensionCount] = await Promise.all([
+          Voucher.count({ where: { packageId }, transaction }),
+          BillingSession.count({ where: { packageId }, transaction }),
+          SessionExtension.count({ where: { packageId }, transaction })
+        ]);
+        if (voucherCount || sessionCount || extensionCount) {
+          throw conflict("A billing package referenced by vouchers or session history cannot be deleted.");
+        }
+
+        await billingPackage.destroy({ transaction });
+        return true;
       });
     },
     generateVouchers: async (_parent, { packageId, quantity }, { user }) => {
@@ -629,53 +654,84 @@ const resolvers = {
         const elapsedMinutes = calculateElapsedMinutes(session.startTime, now);
         let durationMinutes = Math.ceil(elapsedMinutes);
         let totalCost = Number(session.totalBillingCost);
+        let finalBillingCharge = 0;
+        const extensions = await SessionExtension.findAll({
+          where: { billingSessionId: session.id },
+          attributes: ["addedMinutes", "extendedAt"],
+          order: [["extendedAt", "ASC"]],
+          transaction
+        });
 
         if (session.billingType === "OPEN_BILLING") {
-          const extensions = await SessionExtension.findAll({
-            where: { billingSessionId: session.id },
-            attributes: ["addedMinutes"],
-            transaction
-          });
-          const prepaidMinutes = extensions.reduce((total, extension) => total + extension.addedMinutes, 0);
-          const unpaidMinutes = Math.max(0, elapsedMinutes - prepaidMinutes);
+          const uncoveredMinutes = calculateUncoveredMinutes(
+            session.startTime,
+            now,
+            extensions
+          );
           const zone = await Zone.findByPk(computer.zoneId, lockOptions(transaction));
           if (!zone) throw notFound("Zone");
-          const finalCharge = calculateOpenBilling(
-            now.getTime() - unpaidMinutes * 60000,
+          finalBillingCharge = calculateOpenBilling(
+            now.getTime() - uncoveredMinutes * 60000,
             now,
             Number(zone.hourlyRate)
           );
-          totalCost = roundMoney(totalCost + finalCharge);
-          if (finalCharge > 0) {
-            const shift = await findActiveShift(parseId(user.id, "userId"), transaction);
-            await createPayment(
-              {
-                shiftId: shift.id,
-                billingSessionId: session.id,
-                paymentType: "BILLING",
-                paymentMethod: paymentMethod || "TUNAI",
-                amount: finalCharge
-              },
-              transaction
-            );
-          }
+          totalCost = roundMoney(totalCost + finalBillingCharge);
         } else if (session.billingType === "MEMBER_BALANCE") {
           const member = await getLockedMember(session.memberId, transaction);
           const zone = await Zone.findByPk(computer.zoneId, lockOptions(transaction));
           if (!zone) throw notFound("Zone");
-          const extensions = await SessionExtension.findAll({
-            where: { billingSessionId: session.id },
-            attributes: ["addedMinutes"],
-            transaction
-          });
-          const prepaidMinutes = extensions.reduce((total, extension) => total + extension.addedMinutes, 0);
-          const billableMinutes = Math.ceil(Math.max(0, elapsedMinutes - prepaidMinutes));
-          durationMinutes = Math.ceil(elapsedMinutes);
-          const grossCost = calculatePrepaidCost(
-            (Number(zone.hourlyRate) / 60) * billableMinutes
+          const billableMinutes = calculateUncoveredMinutes(
+            session.startTime,
+            now,
+            extensions
           );
+          durationMinutes = Math.ceil(elapsedMinutes);
+          const grossCost = calculatePrepaidCost((Number(zone.hourlyRate) / 60) * billableMinutes);
           await debitMember(member, grossCost, Number(zone.hourlyRate), transaction);
           totalCost = roundMoney(totalCost + grossCost);
+        } else {
+          const overtimeMinutes = Math.max(0, elapsedMinutes - session.durationMinutes);
+          if (overtimeMinutes > 0) {
+            const zone = await Zone.findByPk(computer.zoneId, lockOptions(transaction));
+            if (!zone) throw notFound("Zone");
+            finalBillingCharge = calculatePrepaidCost(
+              (Number(zone.hourlyRate) / 60) * overtimeMinutes
+            );
+            totalCost = roundMoney(totalCost + finalBillingCharge);
+          }
+        }
+
+        const unpaidOrders = await FbOrder.findAll({
+          where: { billingSessionId: session.id, paymentStatus: "BELUM_BAYAR" },
+          attributes: ["id", "totalAmount"],
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        const foodTotal = roundMoney(
+          unpaidOrders.reduce((total, order) => total + Number(order.totalAmount), 0)
+        );
+        const outstandingAmount = roundMoney(finalBillingCharge + foodTotal);
+        if (outstandingAmount > 0) {
+          const shift = await findActiveShift(parseId(user.id, "userId"), transaction);
+          await createPayment(
+            {
+              shiftId: shift.id,
+              billingSessionId: session.id,
+              paymentType: unpaidOrders.length ? "GABUNGAN" : "BILLING",
+              paymentMethod: paymentMethod || "TUNAI",
+              amount: outstandingAmount
+            },
+            transaction
+          );
+        }
+        if (unpaidOrders.length) {
+          await FbOrder.update(
+            { paymentStatus: "LUNAS" },
+            {
+              where: { id: { [Op.in]: unpaidOrders.map((order) => order.id) } },
+              transaction
+            }
+          );
         }
 
         if (session.memberId) {
